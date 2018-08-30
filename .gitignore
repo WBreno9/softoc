@@ -30,3 +30,10 @@
 *.exe
 *.out
 *.app
+
+# Assembly Files
+*.s
+
+build/
+
+compile_commands.json

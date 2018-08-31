@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
+#include <xmmintrin.h>
 #include <smmintrin.h>
 
 //Fits in a 32bit register
@@ -69,9 +71,13 @@ typedef __m128 vec4;
 #define vec4_add                _mm_add_ps
 #define vec4_sub                _mm_sub_ps
 #define vec4_mul                _mm_mul_ps
-#define vec4_div                _mm_mul_ps
+#define vec4_div                _mm_div_ps
 #define vec4_dot                _mm_dp_ps
 #define vec4_xor                _mm_xor_ps
+#define vec4_crs                _vec4_crs
+#define vec4_nrm                _vec4_nrm
+#define vec4_lng                _vec4_lng
+#define vec4_sum                _mm_hadds_ps
 
 #define VEC2_DOT                0x30
 #define VEC3_DOT                0x70
@@ -87,15 +93,36 @@ static inline void vec4_print(vec4 a) {
     printf("vec4 = [%.2f, %.2f, %.2f, %.2f]\n", a[0], a[1], a[2], a[3]);
 }
 
+static inline vec4 _vec4_crs(vec4 a, vec4 b) {
+    return vec4_sub(vec4_mul(_mm_shuffle_ps(a, a, _MM_SHUFFLE(3, 0, 2, 1)),
+                             _mm_shuffle_ps(b, b, _MM_SHUFFLE(3, 1, 0, 2))),
+                    vec4_mul(_mm_shuffle_ps(a, a, _MM_SHUFFLE(3, 1, 0, 2)),
+                             _mm_shuffle_ps(b, b, _MM_SHUFFLE(3, 0, 2, 1))));
+}
+
+/*TODO*/
+//Ugly, unecessary AND lacks optimization
+static inline vec4 _vec4_lng(vec4 a, const short m) {
+    vec4 dst;
+
+    vec4 tmp = vec4_mul(a, a);
+    float len = sqrt(tmp[0] + tmp[1] + tmp[2]);
+
+    for (int i = 0; i < 4; i++) {
+        if (m & VEC_STORE_0) dst[0] = len;
+        if (m & VEC_STORE_1) dst[1] = len;
+        if (m & VEC_STORE_2) dst[2] = len;
+        if (m & VEC_STORE_3) dst[3] = len;
+    }
+
+    return dst;
+}
+
+static inline vec4 _vec4_nrm(vec4 a) {
+    return vec4_div(a, vec4_lng(a, VEC_STORE_ALL));
+}
+
 typedef vec4 mat4[4];
-
-typedef struct {
-    vec4 pos;
-    vec4 forward;
-    vec4 up;
-
-    float fov;
-} camera_t;
 
 static inline void mat4_print(mat4 m) {
     printf("mat4:\n");
@@ -105,6 +132,9 @@ static inline void mat4_print(mat4 m) {
     }
 }
 
+/*TODO*/
+//Check out _MM_TRANSPOSE4_PS
+//It probably uses shuffles
 static inline void mat4_transpose(mat4 a, mat4 b) {
     b[0] = vec4_set(a[0][0], a[1][0], a[2][0], a[3][0]);
     b[1] = vec4_set(a[0][1], a[1][1], a[2][1], a[3][1]);
@@ -113,8 +143,17 @@ static inline void mat4_transpose(mat4 a, mat4 b) {
 }
 
 static inline void mat4_cpy(mat4 a, mat4 b) {
-    for (int i = 0; i < 4; i++) 
-        b[i] = a[i];
+    for (int i = 0; i < 4; i++) b[i] = a[i];
+}
+
+static inline vec4 vec4_mul_mat4(vec4 a, mat4 b) {
+    mat4 t;
+    mat4_transpose(b, t);
+
+    return vec4_xor(vec4_xor(vec4_dot(a, t[0], VEC4_DOT | VEC_STORE_0),
+                             vec4_dot(a, t[1], VEC4_DOT | VEC_STORE_1)),
+                    vec4_xor(vec4_dot(a, t[2], VEC4_DOT | VEC_STORE_2),
+                             vec4_dot(a, t[3], VEC4_DOT | VEC_STORE_3)));
 }
 
 static inline void mat4_mul(mat4 a, mat4 b, mat4 c) {
@@ -129,26 +168,42 @@ static inline void mat4_mul(mat4 a, mat4 b, mat4 c) {
     }
 }
 
-static inline vec4 vec4_mul_mat4(vec4 a, mat4 b) {
+typedef struct {
+    vec4 pos;
+    vec4 forward;
+    vec4 up;
+    vec4 right;
+
+    mat4 transform;
+
+    float fov;
+} camera_t;
+
+void update_camera_mat(camera_t* cam) {
+    /*TODO*/
+    //Ugly and unecessary
+    //and probably lacks optimization
+    vec4 world_up = vec4_set(0.0f, 1.0f, 0.0f, 1.0f);
+
+    cam->right = (vec4_crs(world_up, vec4_set(1.0f, 0.0f, 0.0f, 1.0f)));
+    cam->up    = vec4_crs(cam->right, cam->forward);
+    cam->right = vec4_crs(cam->forward, cam->up);
+
+    mat4 t;
+    t[0] = cam->right;
+    t[1] = cam->up;
+    t[2] = cam->forward;
+    t[3] = vec4_set(0.0f, 0.0f, 0.0f, 0.0f);
+
+    mat4_transpose(t, cam->transform);
 }
 
 int main() {
+    camera_t cam;
 
-    mat4 m;
+    cam.pos     = vec4_set(0.0f, 0.0f,  5.0f, 1.0f);
+    cam.forward = vec4_set(0.0f, 0.0f, -1.0f, 0.0f);
 
-    m[0] = vec4_set(1.0f, 0.0f, 0.0f, 0.0f);
-    m[1] = vec4_set(0.0f, 1.0f, 0.0f, 0.0f);
-    m[2] = vec4_set(0.0f, 0.0f, 1.0f, 0.0f);
-    m[3] = vec4_set(0.0f, 0.0f, 0.0f, 1.0f);
-
-    mat4 m0;
-
-    m0[0] = vec4_set(2.0f, 1.0f, 0.0f, 0.0f);
-    m0[1] = vec4_set(0.0f, 1.0f, 0.0f, 0.0f);
-    m0[2] = vec4_set(0.0f, 0.0f, 2.0f, 0.0f);
-    m0[3] = vec4_set(0.0f, 0.0f, 0.0f, 1.0f);
-
-    mat4_mul(m, m0, m);
-    mat4_print(m);
+    mat4_print(cam.transform);
     return 0;
 }
